@@ -1,0 +1,406 @@
+Type ProcessedDataTYPE
+   dataDate As Date
+   dataDocsRemain As Variant 'But will be treated like an integer
+End Type
+ 
+Public Const ZERODATE As Date = #1/1/1926# 'Lockheed founded in 1926
+Public Const MAXNUMOFDOCS = 101 '100 docs plus the starting point
+Public Const STARTPLOTBUFFERDAYS = 3 'The duration between when the lines are still flat (near the start of the plot) and the first real data point
+ 
+Sub Plot_BurnDown_Chart()
+ 
+   
+    Dim plotLineColors(8) As Long
+    plotLineColors(1) = RGB(68, 114, 196) 'Blue
+    plotLineColors(2) = RGB(237, 125, 49) 'Orange
+    plotLineColors(3) = RGB(112, 173, 71) 'Lime
+    plotLineColors(4) = RGB(255, 192, 0) 'Yellow
+    plotLineColors(5) = RGB(255, 0, 0) 'Red
+    plotLineColors(6) = RGB(165, 165, 165) 'Gray
+    plotLineColors(7) = RGB(218, 66, 238) 'Purple
+    Dim countPlotLineColor As Integer
+    countPlotLineColor = 1
+        
+        
+    Const HEADERROW = 4
+    Const DOCNAMECOL = 1
+    Set dataSheet = Worksheets(1)
+    Set chartSheet = Worksheets(2)
+   
+    
+    chartLineNum = 0
+    Dim prevHeaderTitle As String
+    Dim curHeaderTitle As String
+    Dim curCell As Range
+    Dim numOfDocs As Integer
+    numOfDocs = 0
+    loopCounter = 0
+    Dim chartData() As ProcessedDataTYPE
+    Dim rawDataDates(MAXNUMOFDOCS) As Date
+    Dim prevForecastLineColor As Long
+                    
+    curColumn = DOCNAMECOL + 1
+    curRow = HEADERROW + 1
+    
+    'Marker for whether a column is Forecast/Actual applicability varible based on usage of the keywords.
+    '0 is No, 1 is Forecast, 2 is Actual
+    Dim foreActualApplic As Integer
+    foreActualApplic = 0
+   
+    Dim plotStartDate As Date
+    'hardcoded location on the Data sheet
+    plotStartDate = dataSheet.Range("B3")
+   
+    Dim plotEndDate As Date
+    'hardcoded location on the Data sheet
+    plotEndDate = dataSheet.Range("C3")
+    
+    Dim keywordForecast As String
+    'hardcoded location on the Data sheet
+    keywordForecast = dataSheet.Range("F3")
+    
+    Dim keywordActual As String
+    'hardcoded location on the Data sheet
+    keywordActual = dataSheet.Range("G3")
+      
+    
+    'Deletes any chart that is on the chart tab
+    If (chartSheet.ChartObjects.Count > 0) Then
+        chartSheet.ChartObjects.Delete
+    End If
+   
+    'Adds a fresh chart for data population and edits outer properties
+    Set curChart = chartSheet.ChartObjects.Add(50, 40, 800, 400).Chart
+    With curChart
+        .HasTitle = True
+        .ChartTitle.Text = "Burndown Chart"
+        .ChartType = xlLine 'Markers
+        .DisplayBlanksAs = xlInterpolated
+        With .Axes(xlCategory)
+            .CategoryType = xlTimeScale
+            .MajorUnit = 7
+            .MinorUnit = 1
+        End With
+               
+    End With
+   
+    'Count the number of documents that must be burned down
+    While (Not IsEmpty(dataSheet.Cells((HEADERROW + 1) + loopCounter, DOCNAMECOL)))
+        numOfDocs = numOfDocs + 1
+        loopCounter = loopCounter + 1
+    Wend
+     
+            
+    'for loop to plot each dates column with its own line
+    'Will loop as long as header column is not empty
+    While (Not IsEmpty(dataSheet.Cells(HEADERROW, curColumn)))
+       
+        chartLineNum = chartLineNum + 1
+       
+        For loopCounter = 0 To numOfDocs - 1
+            Set curCell = dataSheet.Cells((HEADERROW + 1) + loopCounter, curColumn)
+           
+            'MsgBox curCell
+            If IsEmpty(curCell) Then
+                'If cell is empty, set is to a our defined 0, ZERODATE, so we know it was empty
+                rawDataDates(loopCounter) = ZERODATE
+                'MsgBox "Zero"
+            Else
+                rawDataDates(loopCounter) = curCell
+                'MsgBox "Value"
+            End If
+           
+        Next loopCounter
+       
+        chartData = Process_Data(rawDataDates, numOfDocs, plotStartDate, plotEndDate)
+       
+        '********************************************************************
+        '********************************************************************
+        'This boxed section is only here because I can't seem to use the following two lines
+        '.XValues = chartData().dataDate
+        '.Values = chartData().dataDocsRemain
+        'underneath .Name = dataSheet.Cells(HEADERROW, curColumn).Text
+        Dim tempDateArray() As Date 'Variant
+        Dim tempDocCountArray() As Variant 'Variant
+       
+        
+        'ReDim to the correct size
+        Dim numberOfDates As Integer
+        numberOfDates = DateDiff("d", plotStartDate, plotEndDate) + 1
+        ReDim tempDateArray(numberOfDates)
+        ReDim tempDocCountArray(numberOfDates)
+       
+        'Loop will keep going until it has passed over the "dataDocsRemain = 0" mark which
+        'is the last element, meaning all documents have been burned down
+        For loopCounter = 0 To numberOfDates - 1
+            tempDateArray(loopCounter) = chartData(loopCounter).dataDate
+            tempDocCountArray(loopCounter) = chartData(loopCounter).dataDocsRemain
+            'MsgBox curColumn
+            'MsgBox "loopCounter " & loopCounter
+            'MsgBox "Doc Count " & tempDocCountArray(loopCounter)
+            'MsgBox "Date " & tempDateArray(loopCounter)
+            'loopCounter = loopCounter + 1
+        'Stop when the end marker (ZERODATE was used) has been reached
+        Next loopCounter
+        '********************************************************************
+        '********************************************************************
+       
+        'This section determines if this line is Forecast/Actual applicable
+       
+        If curHeaderTitle <> "" Then
+            prevHeaderTitle = curHeaderTitle
+        End If
+        curHeaderTitle = dataSheet.Cells(HEADERROW, curColumn).Text
+        
+        'This If statement searches for keywords
+        If InStr(curHeaderTitle, keywordForecast) Then
+            foreActualApplic = 1
+        ElseIf InStr(curHeaderTitle, keywordActual) Then
+            foreActualApplic = 2
+        Else
+            foreActualApplic = 0
+        End If
+                   
+        'Do all the plot work for the line of this header row
+        With curChart
+            .SeriesCollection.NewSeries
+            With .SeriesCollection(chartLineNum)
+                'Get date category which will be used as the title of line
+                'MsgBox (dataSheet.Cells(HEADERROW, curColumn).Text)
+                .Name = curHeaderTitle
+                'MsgBox dataSheet.Cells(HEADERROW, curColumn).Text
+                .XValues = tempDateArray()
+                
+                '
+                If countPlotLineColor <= 7 Then
+                    .Format.Line.ForeColor.RGB = plotLineColors(countPlotLineColor)
+                End If
+                
+                If foreActualApplic = 2 Then 'If column is "Actual"
+                    .Format.Line.DashStyle = msoLineSolid
+                ElseIf foreActualApplic = 1 Then 'If column is "Forecast"
+                    prevForecastLineColor = .Format.Line.ForeColor.RGB
+                    .Format.Line.DashStyle = msoLineDash
+                End If
+'                For loopCounter = 0 To numberOfDates - 1
+'                    'MsgBox tempDateArray(loopCounter)
+'                    'MsgBox tempDocCountArray(loopCounter)
+'                    chartSheet.Cells(35 + loopCounter, 2) = tempDateArray(loopCounter)
+'                    chartSheet.Cells(35 + loopCounter, 3) = tempDocCountArray(loopCounter)
+'                    'MsgBox curColumn
+'                    'MsgBox "loopCounter " & loopCounter
+'                    'MsgBox "Doc Count " & tempDocCountArray(loopCounter)
+'                    'MsgBox "Date " & tempDateArray(loopCounter)
+'                    'loopCounter = loopCounter + 1
+'                'Stop when the end marker (ZERODATE was used) has been reached
+'                Next loopCounter
+                .Values = tempDocCountArray() 'Range("C35:C87") 'tempDocCountArray()
+                'MsgBox "h"
+            End With
+        End With
+        'Move to the next column
+        curColumn = curColumn + 1
+        
+        'Had to be outside of the "With" statement or the countPlotLineColor would increment too early
+        If foreActualApplic <> 1 Then 'If column is "Actal" or standalone (not Forecast/Actual)
+            'increments the color
+            countPlotLineColor = countPlotLineColor + 1
+        End If
+       
+    Wend
+   
+    chartSheet.Activate
+ 
+End Sub
+ 
+ 
+Function Process_Data(rawDataBuf() As Date, bufNumberOfDocs As Integer, startDate As Date, endDate As Date) As ProcessedDataTYPE()
+   
+    
+    Dim bufData() As ProcessedDataTYPE '101 max because 100 max docs plus the 1 start date
+    Dim bufDataCounter As Integer
+    bufDataCounter = 1 'Starts with 1 so that element ZERO is that start date
+    Dim bufDocCount As Integer
+    bufDocCount = bufNumberOfDocs 'To keep track of the documents left to burn down
+    Dim bufDate As Date
+    Dim outerLoopCntr As Integer
+    Dim innerLoopCntr As Integer
+   
+    Dim numberOfDates As Integer
+    numberOfDates = DateDiff("d", startDate, endDate) + 1 'Plus 1 is from the first date that is the start date
+    ReDim bufData(numberOfDates)
+   
+    'First element is the number of docs to burn down and the start date
+    bufData(0).dataDocsRemain = bufNumberOfDocs
+    bufData(0).dataDate = startDate
+   
+    
+    
+    
+    
+    'MsgBox "Start-1"
+    'For bufDataCounter = 0 To 0 'bufNumberOfDocs - 1
+    '    MsgBox rawDataBuf(bufDataCounter)
+    'Next bufDataCounter
+    'MsgBox "End-1"
+    'bufDataCounter = 1
+   
+ 
+   
+    
+    
+    'Sorts the raw dates from earliest to latest.
+    For outerLoopCntr = 0 To (bufNumberOfDocs - 1) - 1 'The second -1 is because VBA is inclusive of the upper limit
+        For innerLoopCntr = 0 To ((bufNumberOfDocs - 1) - outerLoopCntr) - 1 'The second -1 is because VBA is inclusive of the upper limit
+            If rawDataBuf(innerLoopCntr) > rawDataBuf(innerLoopCntr + 1) Then
+                bufDate = rawDataBuf(innerLoopCntr + 1)
+                rawDataBuf(innerLoopCntr + 1) = rawDataBuf(innerLoopCntr)
+                rawDataBuf(innerLoopCntr) = bufDate
+            End If
+        Next innerLoopCntr
+    Next outerLoopCntr
+   
+    
+    
+    
+    
+    
+    outerLoopCntr = 0
+    bufDataCounter = 0
+   
+    'Loop to fill with all dates between start and end dates (inclusive of both ends)
+    Do
+        bufData(outerLoopCntr + 1).dataDate = DateAdd("d", 1, bufData(outerLoopCntr).dataDate)
+       
+        'MsgBox "0o0o0o0o0o"
+        'MsgBox bufData(outerLoopCntr + 1).dataDate
+        'MsgBox rawDataBuf(bufDataCounter)
+       
+        While rawDataBuf(bufDataCounter) = ZERODATE
+            bufDataCounter = bufDataCounter + 1
+        Wend
+       
+        
+        
+        If rawDataBuf(bufDataCounter) = bufData(outerLoopCntr + 1).dataDate Then
+            'MsgBox "0000000000"
+            Do
+                'MsgBox "0101010101"
+                'If the loop is on its last loop, It shouldn't look at rawDataBuf(outerLoopCntr + 1)
+                If bufDataCounter = bufNumberOfDocs - 1 Then
+                    bufDocCount = bufDocCount - 1
+                    bufData(outerLoopCntr + 1).dataDocsRemain = bufDocCount
+                    'bufDataCounter = bufDataCounter + 1
+                    'MsgBox bufDocCount
+                    'MsgBox "1111111111"
+                'MsgBox "Last Element"
+                'This is to cover duplicate dates, it will show as multiple docs completed on this date.
+                ElseIf rawDataBuf(bufDataCounter) = rawDataBuf(bufDataCounter + 1) Then
+                    bufDocCount = bufDocCount - 1
+                    'MsgBox "2222222222"
+                    'MsgBox rawDataBuf(bufDataCounter)
+                'Adds documents remaining to burn down to final array
+                Else
+                    bufDocCount = bufDocCount - 1
+                    bufData(outerLoopCntr + 1).dataDocsRemain = bufDocCount
+                    'bufDataCounter = bufDataCounter + 1
+                    'MsgBox "3333333333"
+                End If
+                bufDataCounter = bufDataCounter + 1
+               
+            Loop While rawDataBuf(bufDataCounter) = bufData(outerLoopCntr + 1).dataDate
+        End If
+        outerLoopCntr = outerLoopCntr + 1
+        'Stop when array is full of all the dates
+    Loop While bufData(outerLoopCntr).dataDate <> endDate
+      
+    
+    
+    
+    
+'
+'
+'
+'    'MsgBox "Start1"
+'    'For outerLoopCntr = 0 To bufNumberOfDocs - 1
+'    '    MsgBox rawDataBuf(outerLoopCntr)
+'    'Next outerLoopCntr
+'    'MsgBox "End1"
+'    'MsgBox "Start4"
+'
+'
+'    For outerLoopCntr = 0 To bufNumberOfDocs - 1
+'
+'
+'        'If there is a ZERODATE, ignore
+'        If rawDataBuf(outerLoopCntr) = ZERODATE Then
+'            'ignoring
+'            'MsgBox "Ignoring"
+'            'MsgBox bufDataCounter
+'        'If the loop is on its last loop, It shouldn't look at rawDataBuf(outerLoopCntr + 1)
+'        ElseIf outerLoopCntr = bufNumberOfDocs - 1 Then
+'            bufDocCount = bufDocCount - 1
+'            bufData(bufDataCounter).dataDocsRemain = bufDocCount
+'            bufData(bufDataCounter).dataDate = rawDataBuf(outerLoopCntr)
+'            bufDataCounter = bufDataCounter + 1
+'            'MsgBox "Last Element"
+'        'This is to cover duplicate dates, it will show as multiple docs completed on this date.
+'        ElseIf rawDataBuf(outerLoopCntr) = rawDataBuf(outerLoopCntr + 1) Then
+'            bufDocCount = bufDocCount - 1
+'            'MsgBox "Duplicate"
+'            'MsgBox rawDataBuf(outerLoopCntr)
+'        Else
+'            bufDocCount = bufDocCount - 1
+'            bufData(bufDataCounter).dataDocsRemain = bufDocCount
+'            bufData(bufDataCounter).dataDate = rawDataBuf(outerLoopCntr)
+'            bufDataCounter = bufDataCounter + 1
+'            'MsgBox "Standard"
+'        End If
+'
+'    Next outerLoopCntr
+'    'MsgBox "End4"
+'    'MsgBox bufDocCount
+'    'MsgBox bufDataCounter
+   
+    'If the last dataDocsRemain is not 0, the plot should show that by the end date, there are more
+    'docs left to burn down. This will add an additional data point with the end date and the
+    'dataDocsRemain that are left.
+    If bufData(outerLoopCntr).dataDocsRemain <> 0 Then
+        bufData(outerLoopCntr).dataDocsRemain = bufDocCount
+    End If
+   
+    'This ZERODATE will mark the end of the list
+    'bufData(bufDataCounter).dataDate = ZERODATE
+    'bufData(bufDataCounter).dataDocsRemain = 1926
+   
+    'MsgBox "Start2"
+    'For outerLoopCntr = 0 To numberOfDates - 1
+    '    MsgBox bufData(outerLoopCntr).dataDate
+    '    MsgBox bufData(outerLoopCntr).dataDocsRemain
+    'Next outerLoopCntr
+    'MsgBox "End2"
+    
+    
+    'Places a value in the second element so the plot have a more gradual slope prior to the data points
+    'bufData(1).dataDocsRemain = bufData(0).dataDocsRemain
+    'bufData(1).dataDate = DateAdd("d", -STARTPLOTBUFFERDAYS, bufData(2).dataDate) 'subtracts a hardcoded number of days from the first real date
+    
+    'MsgBox (bufData(4).dataDocsRemain)
+    
+    'Places a value in the element that is a few days before the first real vaule
+    'so the slope looks better on the plot
+    For outerLoopCntr = 1 To (bufNumberOfDocs - 1) - 1 'The second -1 is because VBA is inclusive of the upper limit in the loop
+        If bufData(outerLoopCntr).dataDocsRemain <> 0 Then
+            If outerLoopCntr > STARTPLOTBUFFERDAYS Then
+                bufData(outerLoopCntr - STARTPLOTBUFFERDAYS).dataDocsRemain = bufData(0).dataDocsRemain
+                'bufData(outerLoopCntr - STARTPLOTBUFFERDAYS).dataDate = DateAdd("d", -STARTPLOTBUFFERDAYS, bufData(outerLoopCntr).dataDate) 'subtracts a hardcoded number of days from the first real date
+            End If
+            
+            Exit For
+        End If
+    Next outerLoopCntr
+    
+   
+    Process_Data = bufData()
+End Function
+
